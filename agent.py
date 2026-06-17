@@ -1,39 +1,189 @@
+```python
 """
 agent.py
 
 The FitFindr planning loop. Orchestrates the three tools in response to a
 natural language user query, passing state between them via a session dict.
-
-Complete tools.py and test each tool in isolation before implementing this file.
-
-Usage (once implemented):
-    from agent import run_agent
-    from utils.data_loader import get_example_wardrobe
-
-    result = run_agent(
-        query="vintage graphic tee under $30, size M",
-        wardrobe=get_example_wardrobe(),
-    )
-    print(result["fit_card"])
-    print(result["error"])   # None on success
 """
 
-from tools import search_listings, suggest_outfit, create_fit_card
+import re
+
+from tools import (
+    search_listings,
+    suggest_outfit,
+    create_fit_card,
+)
 
 
 # ── session state ─────────────────────────────────────────────────────────────
 
 def _new_session(query: str, wardrobe: dict) -> dict:
-    """
-    Initialize and return a fresh session dict for one user interaction.
-
-    The session dict is the single source of truth for everything that happens
-    during a run — it stores the original query, parsed parameters, tool results,
-    and any error that caused early termination.
-
-    You may add fields to this dict as needed for your implementation.
-    """
     return {
+        "query": query,
+        "parsed": {},
+        "search_results": [],
+        "selected_item": None,
+        "wardrobe": wardrobe,
+        "outfit_suggestion": None,
+        "fit_card": None,
+        "error": None,
+    }
+
+
+# ── planning loop ─────────────────────────────────────────────────────────────
+
+def run_agent(query: str, wardrobe: dict) -> dict:
+    """
+    Main FitFindr planning loop.
+    """
+
+    session = _new_session(query, wardrobe)
+
+    # ---------------------------------------------------------
+    # Step 1: Parse query
+    # ---------------------------------------------------------
+
+    query_lower = query.lower()
+
+    size = None
+    max_price = None
+
+    common_sizes = [
+        "xxs",
+        "xs",
+        "s",
+        "m",
+        "l",
+        "xl",
+        "xxl",
+    ]
+
+    for possible_size in common_sizes:
+        if f"size {possible_size}" in query_lower:
+            size = possible_size.upper()
+            break
+
+    price_match = re.search(r"\$?(\d+)", query_lower)
+
+    if (
+        price_match
+        and (
+            "under" in query_lower
+            or "below" in query_lower
+            or "$" in query_lower
+        )
+    ):
+        max_price = float(price_match.group(1))
+
+    description = query
+
+    if "under" in query_lower:
+        description = query_lower.split("under")[0]
+
+    if "size" in query_lower:
+        description = description.split("size")[0]
+
+    description = description.strip()
+
+    session["parsed"] = {
+        "description": description,
+        "size": size,
+        "max_price": max_price,
+    }
+
+    # ---------------------------------------------------------
+    # Step 2: Search listings
+    # ---------------------------------------------------------
+
+    results = search_listings(
+        description=description,
+        size=size,
+        max_price=max_price,
+    )
+
+    session["search_results"] = results
+
+    if not results:
+        session["error"] = (
+            "No listings matched your search. "
+            "Try a different size, budget, or description."
+        )
+        return session
+
+    # ---------------------------------------------------------
+    # Step 3: Select best item
+    # ---------------------------------------------------------
+
+    selected_item = results[0]
+
+    session["selected_item"] = selected_item
+
+    # ---------------------------------------------------------
+    # Step 4: Suggest outfit
+    # ---------------------------------------------------------
+
+    outfit = suggest_outfit(
+        selected_item,
+        wardrobe,
+    )
+
+    session["outfit_suggestion"] = outfit
+
+    # ---------------------------------------------------------
+    # Step 5: Create fit card
+    # ---------------------------------------------------------
+
+    fit_card = create_fit_card(
+        outfit,
+        selected_item,
+    )
+
+    session["fit_card"] = fit_card
+
+    # ---------------------------------------------------------
+    # Step 6: Return completed session
+    # ---------------------------------------------------------
+
+    return session
+
+
+# ── CLI test ──────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    from utils.data_loader import (
+        get_example_wardrobe,
+    )
+
+    print("=== Happy path ===\n")
+
+    session = run_agent(
+        query="looking for a vintage graphic tee under $30",
+        wardrobe=get_example_wardrobe(),
+    )
+
+    if session["error"]:
+        print("ERROR:")
+        print(session["error"])
+
+    else:
+        print("FOUND ITEM:")
+        print(session["selected_item"]["title"])
+
+        print("\nOUTFIT:")
+        print(session["outfit_suggestion"])
+
+        print("\nFIT CARD:")
+        print(session["fit_card"])
+
+    print("\n\n=== No Results Path ===\n")
+
+    session2 = run_agent(
+        query="designer ballgown size XXS under $5",
+        wardrobe=get_example_wardrobe(),
+    )
+
+    print(session2["error"])
+```
         "query": query,              # original user query
         "parsed": {},                # extracted description / size / max_price
         "search_results": [],        # list of matching listing dicts
